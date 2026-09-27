@@ -100,11 +100,27 @@ scored per plate.
 |---|---|---|---|
 | Heuristic (untrained fallback) | 0.626 | 1.7% | 41.7% |
 | **Trained ranker** | **0.784** | **8.3%** | **61.7%** |
+| *Oracle (best candidate in the pool)* | *0.880* | *18.3%* | *86.7%* |
 
 Learning to choose the candidate is worth **+0.16 mean score**, a 5x higher
 perfect rate, and +20 points of cluster-count accuracy — with an identical
 candidate pool. The ranker itself predicts a candidate's grade with a test MAE of
 **0.079**, against 0.294 for predicting the mean.
+
+The **oracle** row is the ceiling: the best candidate the sweep produced, chosen
+with the answer key in hand. It is the most useful number here, because it splits
+the remaining error into two very different problems:
+
+* The trained ranker captures **62% of the gap** between the heuristic and the
+  oracle (+0.158 of an available 0.254). About **0.096 of ranking headroom is
+  left** — a better ranker is still worth building.
+* But the oracle itself is only **18.3% perfect**. On four plates out of five,
+  *no candidate in the pool is exactly right*, so no amount of better ranking can
+  fix them. Raising the perfect rate much further is a candidate-generation
+  problem — a denser parameter grid, per-cluster refinement, or merging clusters
+  across candidates — not a ranking problem.
+
+Run `python scripts/benchmark.py` to reproduce that three-way split.
 
 Which algorithm actually wins varies a lot by plate, which is the whole argument
 for the sweep: across the 60 test plates the winner was DBSCAN 37 times, HDBSCAN
