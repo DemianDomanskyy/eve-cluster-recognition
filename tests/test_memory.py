@@ -121,3 +121,48 @@ def test_persists_across_reopen(tmp_path):
     with ClusterMemory(path) as reopened:
         assert len(reopened) == 1
         assert reopened.recall(plate) is not None
+
+
+def test_memory_is_usable_from_another_thread(tmp_path):
+    """The app solves on a worker thread while the UI reads the store."""
+    import threading
+
+    mem = ClusterMemory(tmp_path / "threaded.db")
+    plate = make_plate(seed=31, n_clusters=2)
+    errors: list[Exception] = []
+
+    def worker() -> None:
+        try:
+            mem.remember(plate, plate.labels, score=1.0, algorithm="t", perfect=True)
+            mem.recall(plate)
+            mem.stats()
+            len(mem)
+        except Exception as exc:  # pragma: no cover - the failure is the point
+            errors.append(exc)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+    assert errors == []
+    assert len(mem) == 1
+    assert mem.recall(plate) is not None  # and still readable from the main thread
+    mem.close()
+
+
+def test_concurrent_writes_do_not_corrupt_the_store(tmp_path):
+    import threading
+
+    mem = ClusterMemory(tmp_path / "concurrent.db")
+    plates = [make_plate(seed=s, n_clusters=2) for s in range(8)]
+    threads = [
+        threading.Thread(
+            target=lambda p=p: mem.remember(p, p.labels, score=1.0, algorithm="t", perfect=True)
+        )
+        for p in plates
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(mem) == len(plates)
+    mem.close()

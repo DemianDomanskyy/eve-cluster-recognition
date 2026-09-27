@@ -201,3 +201,41 @@ def test_points_outside_every_loop_are_noise():
     labels = labels_from_polygons(pts, [[[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]]])
     assert labels[0] == 0
     assert labels[1] == NOISE
+
+
+def test_hand_drawn_loops_can_be_taught_and_recalled(tmp_path):
+    """Draw the right answer once; the plate is recognised from then on."""
+    from pdcluster.memory import ClusterMemory
+    from pdcluster.pipeline import ClusterRecognizer
+
+    plate = make_plate(seed=2024, n_clusters=3, n_points=700, noise_fraction=0.1)
+    memory = ClusterMemory(tmp_path / "taught.db")
+    recognizer = ClusterRecognizer(memory=memory, stability_repeats=1)
+
+    # The loops a person would draw around the true populations.
+    loops = [p.vertices for p in plan_clicks(plate, labels=plate.labels)]
+    labels = labels_from_polygons(plate.points, loops)
+    assert recognizer.teach(plate, labels) is not None
+
+    result = recognizer.solve(plate, polygons=False)
+    assert result.solution.source == "memory"
+    assert result.solution.algorithm == "taught"
+    assert result.solution.n_clusters == len(loops)
+    memory.close()
+
+
+def test_taught_answer_survives_a_jittered_copy(tmp_path):
+    from pdcluster.memory import ClusterMemory
+    from pdcluster.pipeline import ClusterRecognizer
+    from pdcluster.types import Plate
+
+    plate = make_plate(seed=8, n_clusters=2, noise_fraction=0.05)
+    memory = ClusterMemory(tmp_path / "t.db")
+    recognizer = ClusterRecognizer(memory=memory, stability_repeats=1)
+    loops = [p.vertices for p in plan_clicks(plate, labels=plate.labels)]
+    recognizer.teach(plate, labels_from_polygons(plate.points, loops))
+
+    rng = np.random.default_rng(0)
+    jittered = Plate(points=plate.points + rng.normal(scale=0.001, size=plate.points.shape))
+    assert recognizer.solve(jittered, polygons=False).solution.source == "memory"
+    memory.close()

@@ -25,6 +25,7 @@ from __future__ import annotations
 import io
 import json
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -136,8 +137,14 @@ class ClusterMemory:
         self.max_entries = max_entries
         if str(self.path) != ":memory:":
             self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self.path))
+        # The app solves on a worker thread while the UI reads the memory on the
+        # main one, and SQLite refuses a connection used from a thread other than
+        # the one that made it.  One shared connection plus a lock is simpler than
+        # a connection per thread, and keeps ":memory:" databases working (those
+        # live inside a single connection and would otherwise be invisible).
+        self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._lock = threading.RLock()
         self._conn.executescript(SCHEMA)
         self._conn.commit()
         self._cache: tuple[np.ndarray, list[int]] | None = None
@@ -154,6 +161,18 @@ class ClusterMemory:
         perfect: bool | None = None,
     ) -> int | None:
         """Store a solution.  Returns the row id, or None when it was not stored."""
+        with self._lock:
+            return self._remember(plate, labels, score, algorithm, params, perfect)
+
+    def _remember(
+        self,
+        plate: Plate,
+        labels: np.ndarray,
+        score: float,
+        algorithm: str,
+        params: dict[str, Any] | None = None,
+        perfect: bool | None = None,
+    ) -> int | None:
         labels = np.asarray(labels, dtype=np.int64)
         if perfect is None:
             perfect = score >= 0.999
@@ -232,6 +251,10 @@ class ClusterMemory:
 
     def recall(self, plate: Plate, min_similarity: float | None = None) -> MemoryHit | None:
         """Look for a stored solution for this plate, exact first then similar."""
+        with self._lock:
+            return self._recall(plate, min_similarity)
+
+    def _recall(self, plate: Plate, min_similarity: float | None = None) -> MemoryHit | None:
         threshold = self.min_similarity if min_similarity is None else min_similarity
 
         row = self._conn.execute(
@@ -331,10 +354,15 @@ class ClusterMemory:
     # ------------------------------------------------------------ maintenance
 
     def __len__(self) -> int:
-        (count,) = self._conn.execute("SELECT COUNT(*) FROM solutions").fetchone()
+        with self._lock:
+            (count,) = self._conn.execute("SELECT COUNT(*) FROM solutions").fetchone()
         return int(count)
 
     def stats(self) -> dict[str, Any]:
+        with self._lock:
+            return self._stats()
+
+    def _stats(self) -> dict[str, Any]:
         row = self._conn.execute(
             "SELECT COUNT(*) n, SUM(perfect) p, SUM(hits) h, AVG(n_clusters) k,"
             " AVG(score) s, MIN(created_at) first, MAX(created_at) last FROM solutions"
@@ -362,7 +390,9 @@ class ClusterMemory:
         if perfect_only:
             sql += " WHERE perfect = 1"
         sql += " ORDER BY hits DESC, created_at DESC LIMIT ?"
-        for row in self._conn.execute(sql, (limit,)):
+        with self._lock:
+            rows = self._conn.execute(sql, (limit,)).fetchall()
+        for row in rows:
             yield MemoryRecord(
                 record_id=int(row["id"]),
                 plate_id=row["plate_id"],
@@ -378,12 +408,20 @@ class ClusterMemory:
             )
 
     def forget(self, record_id: int) -> bool:
+        with self._lock:
+            return self._forget(record_id)
+
+    def _forget(self, record_id: int) -> bool:
         cur = self._conn.execute("DELETE FROM solutions WHERE id = ?", (record_id,))
         self._conn.commit()
         self._cache = None
         return cur.rowcount > 0
 
     def clear(self) -> int:
+        with self._lock:
+            return self._clear()
+
+    def _clear(self) -> int:
         cur = self._conn.execute("DELETE FROM solutions")
         self._conn.commit()
         self._cache = None

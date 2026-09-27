@@ -59,6 +59,7 @@ def cmd_train(args: argparse.Namespace) -> int:
         stability_repeats=args.stability_repeats,
         seed=args.seed,
         progress=args.progress,
+        n_jobs=args.n_jobs,
     )
     out = ranker.save(args.model)
     print(report.summary())
@@ -81,6 +82,7 @@ def cmd_solve(args: argparse.Namespace) -> int:
         write_memory=not args.no_memory,
         stability_repeats=args.stability_repeats,
         max_k=args.max_k,
+        n_jobs=args.n_jobs,
     )
     result = recognizer.solve(plate, polygons=True)
     print(f"{args.input}: {result.summary()}")
@@ -200,6 +202,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--report", help="write the training report as JSON")
     p.add_argument("--stability-repeats", type=int, default=2)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--n-jobs", type=int, default=-1, help="parallel workers (-1 = all cores)")
     p.add_argument("--progress", action="store_true")
     p.set_defaults(func=cmd_train)
 
@@ -215,6 +218,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-vertices", type=int, default=9, help="polygon side limit (default 9)")
     p.add_argument("--max-k", type=int, default=6)
     p.add_argument("--stability-repeats", type=int, default=2)
+    p.add_argument("--n-jobs", type=int, default=-1, help="parallel workers (-1 = all cores)")
     p.set_defaults(func=cmd_solve)
 
     p = sub.add_parser("eval", help="grade the recognizer on labelled plates")

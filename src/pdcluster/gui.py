@@ -17,6 +17,8 @@ This draws on its own canvas.  It does not send clicks to any other program.
 from __future__ import annotations
 
 import json
+import queue
+import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox
@@ -24,7 +26,7 @@ from typing import Any
 
 import numpy as np
 
-from .clicks import MAX_VERTICES, ClickPlan, plan_clicks, score_polygon
+from .clicks import MAX_VERTICES, ClickPlan, labels_from_polygons, plan_clicks, score_polygon
 from .loading import load_plate
 from .memory import ClusterMemory
 from .pipeline import ClusterRecognizer
@@ -75,6 +77,9 @@ class ClusterApp:
         self.show_truth = False
         self.hover: tuple[float, float] | None = None
         self.replay_job: str | None = None
+        self.busy = False
+        self.results: queue.Queue = queue.Queue()
+        self.buttons: list[tk.Button] = []
 
         self.model_path = model_path
         self.memory_path = memory_path
@@ -188,6 +193,7 @@ class ClusterApp:
             pady=7,
         )
         btn.pack(fill="x", padx=16, pady=3)
+        self.buttons.append(btn)
         return btn
 
     def _build_sidebar(self, bar: tk.Frame) -> None:
@@ -209,6 +215,13 @@ class ClusterApp:
         self.draw_btn = self._button(bar, "Start drawing", self.toggle_draw)
         self._button(bar, "Undo vertex  (right-click)", self.undo_vertex)
         self._button(bar, "Clear my loops", self.clear_drawn)
+
+        self._section(bar, "Memory")
+        self.remember_btn = self._button(bar, "Remember my loops", self.remember_drawn)
+        self.memory_label = tk.Label(
+            bar, text="", bg=PANEL, fg=INK_DIM, font=("Consolas", 8), anchor="w"
+        )
+        self.memory_label.pack(fill="x", padx=16, pady=(2, 0))
 
         self._section(bar, "Export")
         self._button(bar, "Save click plan (JSON)", self.export_clicks)
@@ -261,6 +274,7 @@ class ClusterApp:
             clear=True,
         )
         self.set_status("Press 'Solve + plan clicks', or start drawing loops yourself.")
+        self.update_memory_label()
         self.redraw()
 
     def open_file(self) -> None:
@@ -308,37 +322,126 @@ class ClusterApp:
         )
         self.redraw()
 
+    def set_busy(self, busy: bool) -> None:
+        """Grey out the controls while a solve is running."""
+        self.busy = busy
+        for btn in self.buttons:
+            btn.configure(state="disabled" if busy else "normal")
+        self.canvas.configure(cursor="watch" if busy else "crosshair")
+
     def solve(self) -> None:
-        if self.plate is None or self.plate.n_points == 0:
+        """Kick off a solve on a worker thread and poll for the result.
+
+        Solving takes a few seconds, and running it inline froze the whole window
+        for that whole time - no repaint, no response, no way to tell whether it
+        had hung.  The work happens off the Tk thread now and the UI stays live.
+        """
+        if self.plate is None or self.plate.n_points == 0 or self.busy:
             return
         self.cancel_replay()
-        self.set_status("solving - sweeping candidate clusterings...")
-        self.root.update_idletasks()
+        self.set_busy(True)
+        self.log("solving - sweeping candidate clusterings...", clear=True)
 
-        result = self.recognizer.solve(self.plate, polygons=True)
+        plate = self.plate
+        recognizer = self.recognizer  # built on this thread, then handed over
+
+        def work() -> None:
+            try:
+                result = recognizer.solve(plate, polygons=True)
+                lo, hi = plate.points.min(axis=0), plate.points.max(axis=0)
+                plans = plan_clicks(
+                    plate,
+                    result.solution,
+                    bounds=(float(lo[0]), float(lo[1]), float(hi[0]), float(hi[1])),
+                )
+                self.results.put(("ok", result, plans))
+            except Exception as exc:  # pragma: no cover - surfaced in the UI
+                self.results.put(("error", exc, None))
+
+        threading.Thread(target=work, daemon=True).start()
+        self._spin = 0
+        self._poll_solve()
+
+    def _poll_solve(self) -> None:
+        """Check for the worker's answer, keeping the status bar alive meanwhile."""
+        try:
+            kind, payload, plans = self.results.get_nowait()
+        except queue.Empty:
+            self._spin = (self._spin + 1) % 4
+            self.set_status("solving" + "." * (self._spin + 1))
+            self.root.after(120, self._poll_solve)
+            return
+
+        self.set_busy(False)
+        if kind == "error":
+            self.log(f"solve failed: {payload}")
+            self.set_status("solve failed")
+            return
+
+        result, self.plans = payload, plans
         self.labels = result.solution.labels
-        lo, hi = self.plate.points.min(axis=0), self.plate.points.max(axis=0)
-        self.plans = plan_clicks(
-            self.plate,
-            result.solution,
-            bounds=(float(lo[0]), float(lo[1]), float(hi[0]), float(hi[1])),
+        self.log(
+            f"{result.solution.n_clusters} cluster(s) via {result.solution.algorithm}"
+            f" [{result.solution.source}]",
+            clear=True,
         )
-
-        self.log(f"\n{result.solution.n_clusters} cluster(s) via {result.solution.algorithm}"
-                 f" [{result.solution.source}]", clear=True)
-        if result.considered:
+        if result.solution.source == "memory":
+            self.log(f"recalled from memory (similarity {result.solution.memory_similarity:.4f})")
+        elif result.considered:
             self.log(f"considered {result.considered} candidate clusterings")
         for plan in self.plans:
-            self.log(plan.describe())
             by_k = " ".join(f"{k}:{v:.2f}" for k, v in sorted(plan.considered.items()))
-            self.log(f"   score by side count -> {by_k}")
+            self.log(f"{plan.describe()}   score by side count -> {by_k}")
         if result.report is not None:
-            self.log(f"\ngraded: {result.report.summary()}")
+            self.log(f"graded: {result.report.summary()}")
 
         total = sum(p.n_clicks for p in self.plans)
         self.set_status(
-            f"{len(self.plans)} loop(s), {total} clicks total. 'Replay the clicks' to watch it draw."
+            f"{len(self.plans)} loop(s), {total} clicks total. "
+            "'Replay the clicks' to watch it draw."
         )
+        self.update_memory_label()
+        self.redraw()
+
+    def update_memory_label(self) -> None:
+        memory = self.recognizer.memory
+        if memory is not None:
+            self.memory_label.configure(text=f"  {len(memory)} solved plate(s) remembered")
+
+    def remember_drawn(self) -> None:
+        """Store the loops you drew as the right answer for this plate.
+
+        The memory only ever holds answers known to be correct, and a loop drawn
+        by hand is exactly that - so drawing a plate correctly once means it is
+        recognised instantly from then on, including a resampled or jittered
+        copy of it.
+        """
+        if self.plate is None or not self.drawn:
+            messagebox.showinfo("Nothing to remember", "Close at least one loop first.")
+            return
+        labels = labels_from_polygons(self.plate.points, self.drawn)
+        clustered = int((labels != NOISE).sum())
+        if clustered == 0:
+            messagebox.showinfo("Empty loops", "Your loops do not contain any points.")
+            return
+
+        record = self.recognizer.teach(self.plate, labels)
+        self.labels = labels
+        lo, hi = self.plate.points.min(axis=0), self.plate.points.max(axis=0)
+        self.plans = plan_clicks(
+            self.plate,
+            labels=labels,
+            bounds=(float(lo[0]), float(lo[1]), float(hi[0]), float(hi[1])),
+        )
+        self.drawn = []
+        n_loops = len(set(labels.tolist()) - {NOISE})
+        self.log(
+            f"remembered {n_loops} loop(s) covering {clustered} points "
+            f"as the answer for this plate (record #{record})"
+        )
+        self.log("solving this plate again will now recall it instead of searching")
+        self.update_memory_label()
+        self.set_status("stored as a perfect solution - solve again to see it recalled")
         self.redraw()
 
     def replay(self) -> None:

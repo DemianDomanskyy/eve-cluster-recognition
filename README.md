@@ -171,7 +171,9 @@ clone. Two ways to work:
 
 **Automatic** — *Solve + plan clicks* finds the populations, works out how many
 sides each loop needs, and *Replay the clicks* animates it placing the vertices
-one at a time, closing each loop on its own first vertex.
+one at a time, closing each loop on its own first vertex. The solve runs on a
+worker thread, so the window stays live and tells you what it is doing instead
+of freezing for the few seconds it takes.
 
 **Draw it yourself** — *Start drawing* gives you the real mechanic:
 
@@ -189,6 +191,23 @@ so you can see where it went wrong.
 
 *Save click plan (JSON)* writes out every loop, planned and hand-drawn, as an
 ordered list of click coordinates.
+
+### Correcting it once is permanent
+
+When the solver gets a plate wrong, draw the loops yourself and press
+**Remember my loops**. Your loops become the plate's stored answer — the memory
+only ever holds answers known to be correct, and one drawn by hand is exactly
+that — so solving that plate again recalls it instead of searching, and a
+resampled or jittered copy of it is recognised too:
+
+```
+1 cluster(s) via kmeans [search]        <- wrong, it merged everything
+   ... you draw three loops and press Remember my loops
+3 cluster(s) via taught [memory]        <- 0.8s, and correct from now on
+```
+
+This is the loop that makes the tool improve with use rather than making the
+same mistake forever.
 
 ### Deciding how many sides a loop needs
 
@@ -244,6 +263,9 @@ A recalled answer is never trusted blindly: after a similarity transfer, the
 result is rejected and the normal search runs if the transfer failed to reproduce
 the remembered cluster count. Only perfect solutions are stored by default
 (`store_only_perfect=True`), which is what makes a hit safe to return unexamined.
+
+You can seed it from the app with **Remember my loops**, or in code with
+`recognizer.teach(plate, labels)`.
 
 ```bash
 pdcluster memory stats          # entries, recall count, breakdown by algorithm
@@ -349,6 +371,11 @@ including the cold→warm memory transition.
   flow-cytometry shapes, but real in-game plates will differ; retrain on real
   labelled plates (`pdcluster train --dataset your_data/`) for best results.
 - `max_k` defaults to 6 populations per plate.
+- Feature extraction runs across all cores (`--n-jobs`, default all). Candidates
+  are scored in separate processes rather than threads, because the work is
+  Python-level and threads simply queue behind the GIL — measured at 0.9x for
+  threads against 3.7x for processes on eight cores. Each candidate carries its
+  own seeded generator, so results do not depend on scheduling.
 - This is an offline analysis tool: it reads data files and screenshots you
   provide, and the app draws on its own canvas. It does not interact with the
   EVE client, read game memory, send clicks to another program, or automate play.

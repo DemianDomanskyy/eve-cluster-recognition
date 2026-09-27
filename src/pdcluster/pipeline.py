@@ -18,7 +18,7 @@ from typing import Any
 import numpy as np
 
 from .candidates import generate_candidates
-from .features import candidate_features, plate_features
+from .features import extract_many, plate_features
 from .memory import ClusterMemory, MemoryHit
 from .polygons import cluster_polygons
 from .ranker import CandidateRanker
@@ -71,6 +71,7 @@ class ClusterRecognizer:
         stability_repeats: int = 2,
         max_k: int = 6,
         seed: int = 0,
+        n_jobs: int = -1,
     ) -> None:
         self.ranker = ranker or CandidateRanker()
         self.memory = memory if memory is not None else (ClusterMemory() if use_memory else None)
@@ -78,6 +79,8 @@ class ClusterRecognizer:
         self.write_memory = write_memory
         self.stability_repeats = stability_repeats
         self.max_k = max_k
+        self.seed = seed
+        self.n_jobs = n_jobs
         self.rng = np.random.default_rng(seed)
 
     # ------------------------------------------------------------------ public
@@ -160,11 +163,19 @@ class ClusterRecognizer:
 
     def _search(self, plate: Plate) -> tuple[Candidate, list[Candidate]]:
         candidates = generate_candidates(plate, max_k=self.max_k)
-        pf = plate_features(plate, self.rng)
-        for cand in candidates:
-            cand.features = candidate_features(
-                plate, cand, pf, stability_repeats=self.stability_repeats, rng=self.rng
-            )
+        pf = plate_features(plate, np.random.default_rng(self.seed))
+        for cand, feats in zip(
+            candidates,
+            extract_many(
+                plate,
+                candidates,
+                pf,
+                stability_repeats=self.stability_repeats,
+                seed=self.seed,
+                n_jobs=self.n_jobs,
+            ),
+        ):
+            cand.features = feats
         ranked = self.ranker.rank(candidates)
         return ranked[0], ranked
 

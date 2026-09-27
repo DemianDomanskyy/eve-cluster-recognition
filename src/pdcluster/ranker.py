@@ -20,7 +20,7 @@ from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.model_selection import train_test_split
 
 from .candidates import generate_candidates
-from .features import FEATURE_NAMES, candidate_features, feature_vector, plate_features
+from .features import FEATURE_NAMES, extract_many, feature_vector, plate_features
 from .scoring import score_clustering
 from .types import Candidate, Plate
 
@@ -114,6 +114,7 @@ def build_training_table(
     stability_repeats: int = 2,
     seed: int = 0,
     progress: bool = False,
+    n_jobs: int = -1,
 ) -> tuple[np.ndarray, np.ndarray, list[dict]]:
     """Enumerate and grade every candidate for every plate.
 
@@ -129,10 +130,12 @@ def build_training_table(
         if plate.labels is None:
             raise ValueError("training plates must carry ground-truth labels")
         pf = plate_features(plate, rng)
-        for cand in generate_candidates(plate):
-            cand.features = candidate_features(
-                plate, cand, pf, stability_repeats=stability_repeats, rng=rng
-            )
+        candidates = generate_candidates(plate)
+        features = extract_many(
+            plate, candidates, pf, stability_repeats=stability_repeats, seed=seed, n_jobs=n_jobs
+        )
+        for cand, feats in zip(candidates, features):
+            cand.features = feats
             report = score_clustering(plate.labels, cand.labels)
             cand.true_score = report.score
             rows.append(feature_vector(cand.features))
@@ -158,10 +161,15 @@ def train_ranker(
     seed: int = 0,
     test_size: float = 0.2,
     progress: bool = False,
+    n_jobs: int = -1,
 ) -> tuple[CandidateRanker, TrainingReport]:
     """Train the candidate ranker on labelled plates."""
     X, y, _ = build_training_table(
-        plates, stability_repeats=stability_repeats, seed=seed, progress=progress
+        plates,
+        stability_repeats=stability_repeats,
+        seed=seed,
+        progress=progress,
+        n_jobs=n_jobs,
     )
     if len(X) < 20:
         raise ValueError("not enough training examples; generate more plates")
