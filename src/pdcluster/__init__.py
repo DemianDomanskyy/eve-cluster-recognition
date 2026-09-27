@@ -9,6 +9,7 @@ Quick start::
     print(result.summary())
 """
 
+from .clicks import ClickPlan, plan_clicks, simplify_to
 from .loading import load_dataset, load_plate, save_dataset, save_plate
 from .memory import ClusterMemory, MemoryHit, fingerprint
 from .pipeline import ClusterRecognizer, EvalReport, SolveResult, evaluate
@@ -24,6 +25,7 @@ __version__ = "0.1.0"
 __all__ = [
     "NOISE",
     "Candidate",
+    "ClickPlan",
     "ClusterMemory",
     "ClusterRecognizer",
     "CandidateRanker",
@@ -41,6 +43,8 @@ __all__ = [
     "load_plate",
     "make_dataset",
     "make_plate",
+    "plan_clicks",
+    "simplify_to",
     "points_from_image",
     "points_in_polygon",
     "render_plate_image",

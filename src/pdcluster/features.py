@@ -233,6 +233,14 @@ def _stability(
     """
     if repeats <= 0:
         return 0.0
+    # A single-cluster answer is trivially "stable": every point carries the same
+    # label, so any re-clustering of a subsample agrees with it perfectly and the
+    # ARI is 1.0 by construction.  That is not evidence of anything, and letting
+    # it through hands k=1 a free top score on the feature the ranker leans on
+    # most - which is exactly how a plate ends up with one loop around everything.
+    if candidate.n_clusters < 2:
+        return 0.0
+
     from .candidates import _relabel_compact  # local import avoids an import cycle
 
     fitter = _refit_fn(candidate)

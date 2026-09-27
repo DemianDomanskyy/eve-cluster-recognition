@@ -5,6 +5,7 @@
     pdcluster solve   --input shot.png --model models/ranker.joblib --plot out.png
     pdcluster eval    --dataset data/test --model models/ranker.joblib --repeat
     pdcluster memory  stats
+    pdcluster gui
 """
 
 from __future__ import annotations
@@ -95,6 +96,18 @@ def cmd_solve(args: argparse.Namespace) -> int:
         print(f"\nsolution -> {args.out}")
     if args.plot:
         print(f"figure   -> {plot_solution(plate, result.solution, args.plot, dark=args.dark)}")
+    if args.clicks:
+        from .clicks import plan_clicks
+
+        plans = plan_clicks(plate, result.solution, max_vertices=args.max_vertices)
+        print()
+        for plan in plans:
+            print("  " + plan.describe())
+        Path(args.clicks).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.clicks).write_text(
+            json.dumps([p.to_dict() for p in plans], indent=2), encoding="utf-8"
+        )
+        print(f"clicks   -> {args.clicks}")
     return 0
 
 
@@ -129,6 +142,17 @@ def cmd_eval(args: argparse.Namespace) -> int:
             f"mean score {first.mean_score:.4f} -> {second.mean_score:.4f}"
         )
     return 0
+
+
+def cmd_gui(args: argparse.Namespace) -> int:
+    from .gui import main as gui_main
+
+    argv: list[str] = []
+    if args.model:
+        argv += ["--model", args.model]
+    if args.memory:
+        argv += ["--memory", args.memory]
+    return gui_main(argv)
 
 
 def cmd_memory(args: argparse.Namespace) -> int:
@@ -187,6 +211,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", help="write the solution as JSON")
     p.add_argument("--plot", help="write a PNG figure")
     p.add_argument("--dark", action="store_true", help="render the figure on a dark surface")
+    p.add_argument("--clicks", help="write the click plan for each cluster as JSON")
+    p.add_argument("--max-vertices", type=int, default=9, help="polygon side limit (default 9)")
     p.add_argument("--max-k", type=int, default=6)
     p.add_argument("--stability-repeats", type=int, default=2)
     p.set_defaults(func=cmd_solve)
@@ -202,6 +228,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=99)
     p.add_argument("--progress", action="store_true")
     p.set_defaults(func=cmd_eval)
+
+    p = sub.add_parser("gui", help="launch the desktop app")
+    p.add_argument("--model", help=common_model["--model"])
+    p.add_argument("--memory", help="memory database path")
+    p.set_defaults(func=cmd_gui)
 
     p = sub.add_parser("memory", help="inspect the solution memory")
     p.add_argument("action", choices=["stats", "list", "forget", "clear"])

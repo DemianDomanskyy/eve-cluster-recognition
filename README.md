@@ -62,7 +62,10 @@ Python 3.10+. Dependencies: numpy, scipy, scikit-learn, joblib, pillow, matplotl
 ## Quick start
 
 ```bash
-# see everything working, no training required
+# the desktop app - solve plates, or draw the loops yourself
+pdcluster gui
+
+# see everything working in the terminal, no training required
 python scripts/demo.py --out out/
 
 # train the ranker on synthetic plates, then grade it on unseen ones
@@ -151,6 +154,78 @@ pdcluster eval --dataset data/test --model models/ranker.joblib --repeat
 python scripts/benchmark.py --dataset data/test --model models/ranker.joblib
 python scripts/demo.py --out out/
 ```
+
+---
+
+## The app
+
+```bash
+pdcluster gui
+```
+
+![The pdcluster desktop app](docs/gui.png)
+
+No arguments needed. It picks up `models/ranker.joblib` if you have trained one
+and falls back to the heuristic ranker if you have not, so it runs on a fresh
+clone. Two ways to work:
+
+**Automatic** — *Solve + plan clicks* finds the populations, works out how many
+sides each loop needs, and *Replay the clicks* animates it placing the vertices
+one at a time, closing each loop on its own first vertex.
+
+**Draw it yourself** — *Start drawing* gives you the real mechanic:
+
+* every click drops a vertex, and an edge joins it to the one before;
+* **nine sides maximum** — past that the only legal click is the closing one;
+* **click the first vertex again to close the loop** (it grows a green ring once
+  you have three vertices, showing you it is ready to close);
+* right-click undoes the last vertex.
+
+The moment you close a loop it is scored against the plate — which cluster it
+best matches, how much of that cluster it captured, how much of what it enclosed
+was foreign — and compared to what the planner chose. *Show the true answer*
+flips the point colours between the reference answer and what the solver found,
+so you can see where it went wrong.
+
+*Save click plan (JSON)* writes out every loop, planned and hand-drawn, as an
+ordered list of click coordinates.
+
+### Deciding how many sides a loop needs
+
+A nine-vertex cap means a 300-vertex alpha shape has to be reduced to a handful
+of corners, and the right number is not fixed — it depends on the shape. Each
+budget from 3 to 9 is tried and scored on what it actually achieves:
+
+* **capture** — the share of the cluster's own points that end up inside the loop
+* **purity** — the share of points inside the loop that belong to the cluster,
+  so enclosing a neighbouring population or a field of debris costs you
+
+The two combine as an F1 score, and the winner is the **fewest** vertices that
+comes within 1% of the best score any budget reached. Two more clicks for a 0.2%
+better outline is not worth it; two more for 15% is. On the plate in the
+screenshot that produces three different answers:
+
+```
+cluster 1: 8 sides   3:0.56  4:0.60  5:0.79  6:0.82  7:0.92  8:0.94  9:0.94
+cluster 2: 4 sides   3:0.83  4:0.87  5:0.87  6:0.87  7:0.87  8:0.87  9:0.87
+cluster 3: 6 sides   3:0.87  4:0.94  5:0.94  6:0.95  7:0.96  8:0.96  9:0.95
+```
+
+The long curved population earns all eight of its sides; the compact one plateaus
+at four and the rest would be wasted clicks.
+
+Two details that matter for a loop you could actually draw. Vertices are grown
+outward along each **edge's own normal** rather than away from the centroid — a
+crescent's centroid lies outside the crescent, so radial growth shears the shape
+and swallows whatever sits in the bend. And every vertex is clamped inside the
+plot area, because a click outside the plot is not a click you can make.
+
+From the command line:
+
+```bash
+pdcluster solve --input plate.npz --clicks clicks.json --max-vertices 9
+```
+
 
 ---
 
@@ -253,6 +328,8 @@ the running as the last resort, since it contains everything by construction.
 | `vision.py` | screenshot → point cloud |
 | `pipeline.py` | `ClusterRecognizer`, the end-to-end flow |
 | `plotting.py` | figures (colorblind-validated palette) and the table view |
+| `clicks.py` | reducing an outline to <=9 clickable vertices, and scoring the result |
+| `gui.py` | the desktop app: auto-solve, click replay, and drawing by hand |
 | `cli.py` | the `pdcluster` command |
 
 ## Tests
@@ -273,8 +350,10 @@ including the cold→warm memory transition.
   labelled plates (`pdcluster train --dataset your_data/`) for best results.
 - `max_k` defaults to 6 populations per plate.
 - This is an offline analysis tool: it reads data files and screenshots you
-  provide. It does not interact with the EVE client, read game memory, or
-  automate play.
+  provide, and the app draws on its own canvas. It does not interact with the
+  EVE client, read game memory, send clicks to another program, or automate play.
+- The app needs Tkinter, which ships with python.org builds on Windows and macOS.
+  On Debian/Ubuntu install it with `sudo apt install python3-tk`.
 
 ## License
 
